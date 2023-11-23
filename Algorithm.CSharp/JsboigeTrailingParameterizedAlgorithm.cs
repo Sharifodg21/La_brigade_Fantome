@@ -23,6 +23,9 @@ using QuantConnect.Brokerages;
 using QuantConnect.Data;
 using QuantConnect.Orders.Fees;
 using QuantConnect.Securities;
+using QuantConnect.Algorithm.Framework.Risk;
+using QuantConnect.Algorithm.Framework.Execution;
+using QuantConnect.Orders;
 
 namespace QuantConnect.Algorithm.CSharp
 {
@@ -31,7 +34,7 @@ namespace QuantConnect.Algorithm.CSharp
     /// </summary>
     /// <meta name="tag" content="optimization" />
     /// <meta name="tag" content="using quantconnect" />
-    public class JsboigeParameterizedAlgorithm : QCAlgorithm, IRegressionAlgorithmDefinition
+    public class JsboigeTrailingParameterizedAlgorithm : QCAlgorithm, IRegressionAlgorithmDefinition
     {
         // We place attributes on top of our fields or properties that should receive
         // their values from the job. The values 100 and 200 are just default values that
@@ -69,43 +72,72 @@ namespace QuantConnect.Algorithm.CSharp
             //SetBenchmark(x => 0);
 
             SetBrokerageModel(BrokerageName.Bitstamp, AccountType.Cash);
-
-            SetCash(10000); // capital
             var btcSecurity = AddCrypto("BTCUSD", Resolution.Daily);
-            
             _btcusd = btcSecurity.Symbol;
+
+
             
-            Fast = EMA(_btcusd, FastPeriod, Resolution.Daily);
-            Slow = EMA(_btcusd, SlowPeriod, Resolution.Daily);
+            Fast = this.EMA(_btcusd, FastPeriod, Resolution.Daily);
+            Slow = this.EMA(_btcusd, SlowPeriod, Resolution.Daily);
+            //this.AddRiskManagement(new TrailingStopRiskManagementModel(_StopDrawdown));
+            //SetExecution(new VolumeWeightedAveragePriceExecutionModel());
+
         }
 
+        private decimal _StopDrawdown = 0.2m;
+        private DateTime _StopDate = DateTime.MinValue;
+        private decimal _StopPrice = Decimal.MaxValue;
         
-        public void OnData(Slice data)
+        public override void OnData(Slice data)
         {
 
             // wait for our indicators to ready
             if (this.IsWarmingUp || !Fast.IsReady || !Slow.IsReady) return;
 
-            string message = "";
-            if (!Portfolio.Invested && Fast > Slow*1.001m)
+           
+            if (!Portfolio.Invested && (Fast > Slow*1.001m) && (data.UtcTime>_StopDate || data.Bars[_btcusd].Close> _StopPrice))
             {
                 SetHoldings(_btcusd, 1);
-                message ="Purchased";
+                _StopDate = DateTime.MinValue;
+                _StopPrice = Decimal.MaxValue;
             }
             else if (Portfolio.Invested && Fast < Slow*0.999m)
             {
                 Liquidate(_btcusd);
-                message ="Sold";
+                
             }
-
-            if (!string.IsNullOrEmpty(message))
-            {
-                var endMessage =
-                    $"Time: {data.Time.ToShortDateString()}, Price:  @{data.Bars[_btcusd].Close}$/Btc; Portfolio: {Portfolio.CashBook[Portfolio.CashBook.AccountCurrency].Amount}$, {Portfolio[_btcusd].Quantity}BTCs, Total Value: {Portfolio.TotalPortfolioValue}$, Total Fees: {Portfolio.TotalFees}$";
-                Debug($"{message} {endMessage}");
-            }
-
+            
         }
+
+        public override void OnOrderEvent(OrderEvent orderEvent)
+        {
+           
+            if (orderEvent.Status == OrderStatus.Filled )
+            {
+
+                string message = "";
+                if (orderEvent.Quantity < 0)
+                {
+                    message = "Sold";
+                    if (Fast > Slow)
+                    {
+                        message = $"Stop {message}";
+                        //_StopDate = orderEvent.UtcTime.AddDays(FastPeriod);
+                        //_StopPrice = orderEvent.FillPrice / (1 - _StopDrawdown);
+                    }
+                }
+                else
+                {
+                    message = "Purchased";
+                }
+
+                var endMessage =
+                    $"Time: {orderEvent.UtcTime.ToShortDateString()}, Price:  @{this.CurrentSlice.Bars[_btcusd].Close}$/Btc; Portfolio: {Portfolio.CashBook[Portfolio.CashBook.AccountCurrency].Amount}$, {Portfolio[_btcusd].Quantity}BTCs, Total Value: {Portfolio.TotalPortfolioValue}$, Total Fees: {Portfolio.TotalFees}$";
+                Debug($"{message} {endMessage}");
+
+            }
+            
+        }       
 
         /// <summary>
         /// This is used by the regression test system to indicate if the open source Lean repository has the required data to run this algorithm.
